@@ -1,12 +1,17 @@
 /**
- * 配置区域
- * 1. PRODUCT_NAME: 产品名称
- * 2. BARK_KEY: 你的 Bark 推送 Key
- * 3. BARK_ICON: 通知的图标 (可选)
+ * 配置区域 - 默认值
+ * 所有配置项都支持通过 Cloudflare 环境变量覆盖，优先级：环境变量 > 代码默认值
+ *
+ * 环境变量配置（可选）：
+ * - PRODUCT_NAME: 产品名称
+ * - BARK_KEY: 你的 Bark 推送 Key
+ * - BARK_ICON: 通知的图标 URL
+ * - ENABLE_SANDBOX_NOTIFICATIONS: 是否推送测试环境通知 ("true" 或 "false")
  */
-const PRODUCT_NAME = "iRich";
-const BARK_KEY = "xxxxxxxxxxxxxxx"; // ⚠️ 替换为你的 Key，或者在 Cloudflare 环境变量设置 BARK_KEY
-const BARK_ICON = "" // 可选：自定义图标 URL
+const PRODUCT_NAME = "iRich"; // 提示：替换为你的产品名称
+const BARK_KEY = ""; // ⚠️ 替换为你的 Key
+const BARK_ICON = ""; // 可选：自定义图标 URL
+const ENABLE_SANDBOX_NOTIFICATIONS = false; // 是否推送 Sandbox 测试环境的通知
 
 export default {
   async fetch(request, env, ctx) {
@@ -14,7 +19,7 @@ export default {
 
     // ==================== 1. 处理 GET 请求 (返回 HTML 页面) ====================
     if (request.method === "GET") {
-      return new Response(renderHtml(url.href), {
+      return new Response(renderHtml(url.href, env), {
         headers: { "Content-Type": "text/html;charset=UTF-8" },
       });
     }
@@ -46,6 +51,13 @@ export default {
 // ==================== 业务逻辑函数 ====================
 
 async function handleAppleNotification(data, env) {
+  // 读取配置（优先使用环境变量）
+  const productName = env.PRODUCT_NAME || PRODUCT_NAME;
+  const barkKey = env.BARK_KEY || BARK_KEY;
+  const barkIcon = env.BARK_ICON || BARK_ICON;
+  const enableSandbox = env.ENABLE_SANDBOX_NOTIFICATIONS === "true" ||
+                        (env.ENABLE_SANDBOX_NOTIFICATIONS === undefined && ENABLE_SANDBOX_NOTIFICATIONS);
+
   if (!data || !data.signedPayload) {
     return { status: "ignored", message: "Missing signedPayload" };
   }
@@ -58,16 +70,22 @@ async function handleAppleNotification(data, env) {
   const subtype = payload.subtype;
   const envName = payload.data?.environment || "Production";
 
-  console.log(`Received: ${notificationType} | ${subtype}`);
+  console.log(`Received: ${notificationType} | ${subtype} | ${envName}`);
 
-  // 2. 获取显示文案
+  // 2. 检查是否推送测试环境通知
+  if (envName === "Sandbox" && !enableSandbox) {
+    console.log("Sandbox notification ignored (ENABLE_SANDBOX_NOTIFICATIONS = false)");
+    return { status: "ignored", message: "Sandbox notifications disabled" };
+  }
+
+  // 3. 获取显示文案
   const eventName = getRevenueEventName(notificationType, subtype);
   if (!eventName) {
     // 如果不是收入事件，默默忽略
     return { status: "ignored", message: `Non-revenue event: ${notificationType}` };
   }
 
-  // 3. 解码第二层 (获取产品ID)
+  // 4. 解码第二层 (获取产品ID)
   let productId = "未知产品";
   try {
     if (payload.data && payload.data.signedTransactionInfo) {
@@ -80,12 +98,11 @@ async function handleAppleNotification(data, env) {
     console.error("Inner JWS error", e);
   }
 
-  // 4. 发送 Bark
-  const key = env.BARK_KEY || BARK_KEY;
-  const title = (envName === "Sandbox" ? "🧪 [测试] " : "🎉 ") + `${PRODUCT_NAME} 新收入！`;
+  // 5. 发送 Bark
+  const title = (envName === "Sandbox" ? "🧪 [测试] " : "🎉 ") + `${productName} 新收入！`;
   const body = `类型：${eventName}\n产品：${productId}`;
 
-  await sendBarkNotification(key, title, body);
+  await sendBarkNotification(barkKey, title, body, barkIcon);
 
   return { status: "success", message: "Notification sent to Bark" };
 }
@@ -125,7 +142,7 @@ function getRevenueEventName(type, subtype) {
   return null; // 返回 null 代表不通知
 }
 
-async function sendBarkNotification(key, title, body) {
+async function sendBarkNotification(key, title, body, icon) {
   if (!key) return;
   try {
     await fetch(`https://api.day.app/${key}`, {
@@ -135,7 +152,7 @@ async function sendBarkNotification(key, title, body) {
         title: title,
         body: body,
         sound: "calypso",
-        icon: BARK_ICON,
+        icon: icon || "",
         group: "Revenue"
       })
     });
@@ -146,7 +163,23 @@ async function sendBarkNotification(key, title, body) {
 
 // ==================== HTML 页面模板 ====================
 
-function renderHtml(currentUrl) {
+function maskBarkKey(key) {
+  if (!key || key.length <= 8) return "****";
+  const start = key.substring(0, 4);
+  const end = key.substring(key.length - 4);
+  return `${start}****${end}`;
+}
+
+function renderHtml(currentUrl, env) {
+  // 读取当前配置（优先使用环境变量）
+  const productName = env?.PRODUCT_NAME || PRODUCT_NAME;
+  const barkKey = env?.BARK_KEY || BARK_KEY;
+  const barkIcon = env?.BARK_ICON || BARK_ICON;
+  const enableSandbox = env?.ENABLE_SANDBOX_NOTIFICATIONS === "true" ||
+                        (env?.ENABLE_SANDBOX_NOTIFICATIONS === undefined && ENABLE_SANDBOX_NOTIFICATIONS);
+
+  const maskedBarkKey = maskBarkKey(barkKey);
+
   // 这里是你要测试的 Mock 数据
   const MOCK_PAYLOAD = {
     "signedPayload": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJub3RpZmljYXRpb25UeXBlIjoiU1VCU0NSSUJFRCIsInN1YnR5cGUiOiJJTklUSUFMX0JVWSIsIm5vdGlmaWNhdGlvblVVSUQiOiIxMjM0NTY3OC0xMjM0LTEyMzQtMTIzNC0xMjM0NTY3ODkwMTIiLCJkYXRhIjp7InNpZ25lZFRyYW5zYWN0aW9uSW5mbyI6ImV5SmhiR2NpT2lKRlV6STFOaUlzSW5SNWNDSTZJa3BYVkNKOS5leUp3Y205a2RXTjBTV1FpT2lKamIyMHVibVY0ZEd4bFlYQnNZV0p6TG1sU2FXTm9MbkJ5WlcxcGRXMGlMQ0owY21GdWMyRmpkR2x2Ymtsa0lqb2lNakF3TURBd01ERXlNelExTmpjNE9TSXNJbTl5YVdkcGJtRnNWSEpoYm5OaFkzUnBiMjVKWkNJNklqSXdNREF3TURBeE1qTTBOVFkzT0RraUxDSndkWEpqYUdGelpVUmhkR1VpT2pFM01EQXdNREF3TURBd01EQXNJbTl5YVdkcGJtRnNVSFZ5WTJoaGMyVkVZWFJsSWpveE56QXdNREF3TURBd01EQXdmUS5mYWtlX3NpZ25hdHVyZV9pbm5lciJ9LCJ2ZXJzaW9uIjoiMi4wIiwic2lnbmVkRGF0ZSI6MTcwMDAwMDAwMDAwMH0.fake_signature_outer"
@@ -165,6 +198,11 @@ function renderHtml(currentUrl) {
     h1 { font-size: 24px; margin-bottom: 10px; }
     p { color: #86868b; margin-bottom: 20px; }
     .status { display: inline-block; background: #e3f5e6; color: #168030; padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; margin-bottom: 20px; }
+    .warning-banner { background: #fff3cd; border: 2px solid #ffc107; border-radius: 8px; padding: 15px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
+    .warning-banner-icon { font-size: 24px; }
+    .warning-banner-content { flex: 1; }
+    .warning-banner-title { font-size: 14px; font-weight: 600; color: #856404; margin: 0 0 5px 0; }
+    .warning-banner-text { font-size: 12px; color: #856404; margin: 0; line-height: 1.5; }
     .url-box { background: #f5f5f7; padding: 15px; border-radius: 8px; margin: 20px 0; border: 2px dashed #d2d2d7; }
     .url-box h3 { font-size: 14px; color: #1d1d1f; margin: 0 0 10px 0; font-weight: 600; }
     .url-box p { font-size: 11px; color: #86868b; margin-bottom: 10px; }
@@ -174,6 +212,16 @@ function renderHtml(currentUrl) {
     .copy-btn:hover { background: #0077ed; }
     .copy-btn:active { transform: scale(0.95); }
     .copy-btn.copied { background: #168030; }
+    .config-box { background: #f9f9fb; padding: 15px; border-radius: 8px; margin: 20px 0; border: 1px solid #e5e5e7; }
+    .config-box h3 { font-size: 14px; color: #1d1d1f; margin: 0 0 12px 0; font-weight: 600; }
+    .config-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #e5e5e7; }
+    .config-item:last-child { border-bottom: none; }
+    .config-label { font-size: 12px; color: #86868b; font-weight: 500; }
+    .config-value { font-size: 12px; color: #1d1d1f; font-family: 'Monaco', 'Menlo', monospace; background: white; padding: 4px 8px; border-radius: 4px; }
+    .config-value.enabled { color: #168030; font-weight: 600; }
+    .config-value.disabled { color: #d1180b; font-weight: 600; }
+    .config-value.warning { color: #d1180b; font-weight: 600; background: #fff3cd; border: 1px solid #ffc107; }
+    .config-icon { width: 32px; height: 32px; border-radius: 6px; object-fit: cover; border: 1px solid #e5e5e7; }
     button { background: #0071e3; color: white; border: none; padding: 12px 24px; font-size: 16px; border-radius: 980px; cursor: pointer; transition: all 0.2s; width: 100%; }
     button:hover { background: #0077ed; transform: scale(1.02); }
     button:active { transform: scale(0.98); }
@@ -193,6 +241,26 @@ function renderHtml(currentUrl) {
       <div class="url-display">
         <div class="url-input" id="notificationUrl">${currentUrl}</div>
         <button class="copy-btn" onclick="copyUrl()">复制</button>
+      </div>
+    </div>
+
+    <div class="config-box">
+      <h3>⚙️ 当前配置</h3>
+      <div class="config-item">
+        <span class="config-label">产品名称</span>
+        <span class="config-value">${productName}</span>
+      </div>
+      <div class="config-item">
+        <span class="config-label">Bark Key</span>
+        <span class="config-value ${!barkKey ? 'warning' : ''}">${!barkKey ? '⚠️ 未配置' : maskedBarkKey}</span>
+      </div>
+      <div class="config-item">
+        <span class="config-label">Bark 图标</span>
+        ${barkIcon ? `<img src="${barkIcon}" alt="Bark Icon" class="config-icon" onerror="this.style.display='none'; this.nextElementSibling.style.display='inline';" /><span class="config-value" style="display:none;">加载失败</span>` : '<span class="config-value">未设置</span>'}
+      </div>
+      <div class="config-item">
+        <span class="config-label">测试环境推送</span>
+        <span class="config-value ${enableSandbox ? 'enabled' : 'disabled'}">${enableSandbox ? '已启用' : '已禁用'}</span>
       </div>
     </div>
 
