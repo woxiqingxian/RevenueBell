@@ -7,11 +7,13 @@
  * - BARK_KEY: 你的 Bark 推送 Key
  * - BARK_ICON: 通知的图标 URL
  * - ENABLE_SANDBOX_NOTIFICATIONS: 是否推送测试环境通知 ("true" 或 "false")
+ * - FORWARD_URL: 转发通知的目标 URL（可选）
  */
 const PRODUCT_NAME = "iRich"; // 提示：替换为你的产品名称
 const BARK_KEY = ""; // ⚠️ 替换为你的 Key
 const BARK_ICON = ""; // 可选：自定义图标 URL
 const ENABLE_SANDBOX_NOTIFICATIONS = false; // 是否推送 Sandbox 测试环境的通知
+const FORWARD_URL = ""; // 可选：转发通知到其他服务的 URL
 
 export default {
   async fetch(request, env, ctx) {
@@ -55,11 +57,19 @@ async function handleAppleNotification(data, env) {
   const productName = env.PRODUCT_NAME || PRODUCT_NAME;
   const barkKey = env.BARK_KEY || BARK_KEY;
   const barkIcon = env.BARK_ICON || BARK_ICON;
+  const forwardUrl = env.FORWARD_URL || FORWARD_URL;
   const enableSandbox = env.ENABLE_SANDBOX_NOTIFICATIONS === "true" ||
                         (env.ENABLE_SANDBOX_NOTIFICATIONS === undefined && ENABLE_SANDBOX_NOTIFICATIONS);
 
   if (!data || !data.signedPayload) {
     return { status: "ignored", message: "Missing signedPayload" };
+  }
+
+  // 转发原始通知到其他服务（不阻塞主流程）
+  if (forwardUrl) {
+    forwardNotification(forwardUrl, data).catch(e => {
+      console.error("Forward notification error (non-blocking):", e);
+    });
   }
 
   // 1. 解码第一层
@@ -85,13 +95,27 @@ async function handleAppleNotification(data, env) {
     return { status: "ignored", message: `Non-revenue event: ${notificationType}` };
   }
 
-  // 4. 解码第二层 (获取产品ID)
+  // 4. 解码第二层 (获取产品ID和优惠信息)
   let productId = "未知产品";
+  let offerInfo = "";
   try {
     if (payload.data && payload.data.signedTransactionInfo) {
       const transactionInfo = decodeJWS(payload.data.signedTransactionInfo);
       if (transactionInfo && transactionInfo.productId) {
         productId = transactionInfo.productId;
+
+        // 检查是否为赠送订阅
+        const offerType = transactionInfo.offerType;
+        const offerDiscountType = transactionInfo.offerDiscountType;
+        const offerIdentifier = transactionInfo.offerIdentifier;
+
+        if (offerType === "promotional" || offerType === 2) {
+          offerInfo = offerIdentifier ? ` (${offerIdentifier})` : " (促销赠送)";
+        } else if (offerType === "introductory" || offerType === 1) {
+          offerInfo = offerDiscountType === "FREE_TRIAL" ? " (免费试用)" : " (引导优惠)";
+        } else if (offerType === "winback" || offerType === 3) {
+          offerInfo = " (挽回优惠)";
+        }
       }
     }
   } catch (e) {
@@ -99,8 +123,9 @@ async function handleAppleNotification(data, env) {
   }
 
   // 5. 发送 Bark
-  const title = (envName === "Sandbox" ? "🧪 [测试] " : "🎉 ") + `${productName} 新收入！`;
-  const body = `类型：${eventName}\n产品：${productId}`;
+  const envPrefix = envName === "Sandbox" ? "🧪 [测试] " : "🎉 ";
+  const title = envPrefix + `${productName} 新收入！`;
+  const body = `类型：${eventName}\n产品：${productId}${offerInfo}`;
 
   await sendBarkNotification(barkKey, title, body, barkIcon);
 
@@ -161,6 +186,21 @@ async function sendBarkNotification(key, title, body, icon) {
   }
 }
 
+async function forwardNotification(url, data) {
+  if (!url) return;
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    console.log(`Forwarded to ${url}, status: ${response.status}`);
+  } catch (e) {
+    console.error("Forward Error", e);
+    throw e; // 重新抛出以便调用方记录
+  }
+}
+
 // ==================== HTML 页面模板 ====================
 
 function maskBarkKey(key) {
@@ -170,15 +210,30 @@ function maskBarkKey(key) {
   return `${start}****${end}`;
 }
 
+function maskUrl(url) {
+  if (!url) return "";
+  try {
+    const urlObj = new URL(url);
+    // 显示域名 + 路径掩码
+    const hasPaths = urlObj.pathname && urlObj.pathname !== '/';
+    return urlObj.hostname + (hasPaths ? '/****' : '');
+  } catch (e) {
+    // 如果不是有效URL，显示前20个字符
+    return url.length > 20 ? url.substring(0, 20) + "..." : url;
+  }
+}
+
 function renderHtml(currentUrl, env) {
   // 读取当前配置（优先使用环境变量）
   const productName = env?.PRODUCT_NAME || PRODUCT_NAME;
   const barkKey = env?.BARK_KEY || BARK_KEY;
   const barkIcon = env?.BARK_ICON || BARK_ICON;
+  const forwardUrl = env?.FORWARD_URL || FORWARD_URL;
   const enableSandbox = env?.ENABLE_SANDBOX_NOTIFICATIONS === "true" ||
                         (env?.ENABLE_SANDBOX_NOTIFICATIONS === undefined && ENABLE_SANDBOX_NOTIFICATIONS);
 
   const maskedBarkKey = maskBarkKey(barkKey);
+  const maskedForwardUrl = maskUrl(forwardUrl);
 
   // 这里是你要测试的 Mock 数据
   const MOCK_PAYLOAD = {
@@ -261,6 +316,10 @@ function renderHtml(currentUrl, env) {
       <div class="config-item">
         <span class="config-label">测试环境推送</span>
         <span class="config-value ${enableSandbox ? 'enabled' : 'disabled'}">${enableSandbox ? '已启用' : '已禁用'}</span>
+      </div>
+      <div class="config-item">
+        <span class="config-label">转发 URL</span>
+        <span class="config-value">${forwardUrl ? maskedForwardUrl : '未设置'}</span>
       </div>
     </div>
 
