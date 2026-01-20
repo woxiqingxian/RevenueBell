@@ -5,15 +5,52 @@
  * 环境变量配置（可选）：
  * - PRODUCT_NAME: 产品名称
  * - BARK_KEY: 你的 Bark 推送 Key
- * - BARK_ICON: 通知的图标 URL
+ * - BARK_ICON: 通知的默认图标 URL
  * - ENABLE_SANDBOX_NOTIFICATIONS: 是否推送测试环境通知 ("true" 或 "false")
  * - FORWARD_URL: 转发通知的目标 URL（可选）
+ * - NOTIFICATION_CONFIG: 通知类型配置 (JSON 字符串)，可配置各类通知的开关、图标、声音等
  */
 const PRODUCT_NAME = "iRich"; // 提示：替换为你的产品名称
 const BARK_KEY = ""; // ⚠️ 替换为你的 Key
-const BARK_ICON = ""; // 可选：自定义图标 URL
+const BARK_ICON = ""; // 可选：默认图标 URL
 const ENABLE_SANDBOX_NOTIFICATIONS = false; // 是否推送 Sandbox 测试环境的通知
 const FORWARD_URL = ""; // 可选：转发通知到其他服务的 URL
+
+/**
+ * 通知类型配置 - 默认值
+ * 每个类别可单独配置: enabled(开关), icon(图标), sound(声音), group(分组)
+ * 环境变量 NOTIFICATION_CONFIG 可覆盖，格式为 JSON 字符串
+ */
+const NOTIFICATION_CONFIG = {
+  // 正向收入通知 (新订阅、续订、优惠等)
+  REVENUE: {
+    enabled: true,
+    icon: "",
+    sound: "calypso",
+    group: "Revenue"
+  },
+  // 退款通知
+  REFUND: {
+    enabled: false,
+    icon: "",
+    sound: "minuet",
+    group: "Refund"
+  },
+  // 风险预警 (续订失败、过期等)
+  RISK: {
+    enabled: false,
+    icon: "",
+    sound: "chord",
+    group: "Risk"
+  },
+  // 状态变更通知 (自动续订开关、计划变更等)
+  STATUS: {
+    enabled: false,
+    icon: "",
+    sound: "popcorn",
+    group: "Status"
+  }
+};
 
 export default {
   async fetch(request, env, ctx) {
@@ -53,13 +90,16 @@ export default {
 // ==================== 业务逻辑函数 ====================
 
 async function handleAppleNotification(data, env) {
-  // 读取配置（优先使用环境变量）
+  // 读取基础配置（优先使用环境变量）
   const productName = env.PRODUCT_NAME || PRODUCT_NAME;
   const barkKey = env.BARK_KEY || BARK_KEY;
   const barkIcon = env.BARK_ICON || BARK_ICON;
   const forwardUrl = env.FORWARD_URL || FORWARD_URL;
   const enableSandbox = env.ENABLE_SANDBOX_NOTIFICATIONS === "true" ||
                         (env.ENABLE_SANDBOX_NOTIFICATIONS === undefined && ENABLE_SANDBOX_NOTIFICATIONS);
+
+  // 读取通知类型配置
+  const notificationConfig = getNotificationConfig(env);
 
   if (!data || !data.signedPayload) {
     return { status: "ignored", message: "Missing signedPayload" };
@@ -88,33 +128,82 @@ async function handleAppleNotification(data, env) {
     return { status: "ignored", message: "Sandbox notifications disabled" };
   }
 
-  // 3. 获取显示文案
-  const eventName = getRevenueEventName(notificationType, subtype);
-  if (!eventName) {
-    // 如果不是收入事件，默默忽略
-    return { status: "ignored", message: `Non-revenue event: ${notificationType}` };
+  // 3. 获取事件配置
+  const eventConfig = getEventConfig(notificationType, subtype);
+  if (!eventConfig) {
+    return { status: "ignored", message: `Unknown event: ${notificationType}|${subtype}` };
   }
 
-  // 4. 解码第二层 (获取产品ID和优惠信息)
+  // 4. 检查该类别通知是否启用
+  const categoryConfig = notificationConfig[eventConfig.category];
+  if (!categoryConfig || !categoryConfig.enabled) {
+    console.log(`${eventConfig.category} notifications disabled`);
+    return { status: "ignored", message: `${eventConfig.category} notifications disabled` };
+  }
+
+  // 5. 解码第二层 (获取产品ID、价格、优惠信息等)
   let productId = "未知产品";
+  let priceInfo = "";
   let offerInfo = "";
+  let offerPeriodInfo = "";
+
   try {
     if (payload.data && payload.data.signedTransactionInfo) {
       const transactionInfo = decodeJWS(payload.data.signedTransactionInfo);
-      if (transactionInfo && transactionInfo.productId) {
-        productId = transactionInfo.productId;
+      if (transactionInfo) {
+        // 产品ID
+        if (transactionInfo.productId) {
+          productId = transactionInfo.productId;
+        }
 
-        // 检查是否为赠送订阅
+        // 价格信息
+        const formattedPrice = formatPrice(transactionInfo.price, transactionInfo.currency);
+        if (formattedPrice) {
+          priceInfo = formattedPrice;
+        }
+
+        // 优惠类型和时长
         const offerType = transactionInfo.offerType;
         const offerDiscountType = transactionInfo.offerDiscountType;
         const offerIdentifier = transactionInfo.offerIdentifier;
+        const offerPeriod = transactionInfo.offerPeriod;
 
-        if (offerType === "promotional" || offerType === 2) {
-          offerInfo = offerIdentifier ? ` (${offerIdentifier})` : " (促销赠送)";
-        } else if (offerType === "introductory" || offerType === 1) {
-          offerInfo = offerDiscountType === "FREE_TRIAL" ? " (免费试用)" : " (引导优惠)";
-        } else if (offerType === "winback" || offerType === 3) {
+        // 解析优惠时长
+        const parsedPeriod = parseOfferPeriod(offerPeriod);
+
+        if (offerType === 3 || offerType === "winback") {
+          // 挽回优惠
           offerInfo = " (挽回优惠)";
+          if (parsedPeriod) {
+            if (offerDiscountType === "FREE_TRIAL") {
+              offerPeriodInfo = `优惠时长：免费 ${parsedPeriod}`;
+            } else {
+              offerPeriodInfo = `优惠时长：${parsedPeriod}`;
+            }
+          }
+        } else if (offerType === 2 || offerType === "promotional") {
+          // 促销优惠
+          offerInfo = offerIdentifier ? ` (${offerIdentifier})` : " (促销优惠)";
+          if (parsedPeriod) {
+            if (offerDiscountType === "FREE_TRIAL") {
+              offerPeriodInfo = `优惠时长：免费 ${parsedPeriod}`;
+            } else {
+              offerPeriodInfo = `优惠时长：${parsedPeriod}`;
+            }
+          }
+        } else if (offerType === 1 || offerType === "introductory") {
+          // 引导优惠
+          if (offerDiscountType === "FREE_TRIAL") {
+            offerInfo = " (免费试用)";
+            if (parsedPeriod) {
+              offerPeriodInfo = `试用时长：${parsedPeriod}`;
+            }
+          } else {
+            offerInfo = " (引导优惠)";
+            if (parsedPeriod) {
+              offerPeriodInfo = `优惠时长：${parsedPeriod}`;
+            }
+          }
         }
       }
     }
@@ -122,14 +211,54 @@ async function handleAppleNotification(data, env) {
     console.error("Inner JWS error", e);
   }
 
-  // 5. 发送 Bark
-  const envPrefix = envName === "Sandbox" ? "🧪 [测试] " : "🎉 ";
-  const title = envPrefix + `${productName} 新收入！`;
-  const body = `类型：${eventName}\n产品：${productId}${offerInfo}`;
+  // 6. 构建通知消息
+  const isSandbox = envName === "Sandbox";
+  const emoji = isSandbox ? "🧪" : eventConfig.emoji;
 
-  await sendBarkNotification(barkKey, title, body, barkIcon);
+  // 根据类别确定标题
+  let titleSuffix;
+  switch (eventConfig.category) {
+    case "REVENUE":
+      titleSuffix = "新收入！";
+      break;
+    case "REFUND":
+      titleSuffix = "退款通知";
+      break;
+    case "RISK":
+      titleSuffix = "风险预警";
+      break;
+    case "STATUS":
+      titleSuffix = "状态变更";
+      break;
+    default:
+      titleSuffix = "通知";
+  }
 
-  return { status: "success", message: "Notification sent to Bark" };
+  const sandboxPrefix = isSandbox ? "[测试] " : "";
+  const title = `${emoji} ${sandboxPrefix}${productName} ${titleSuffix}`;
+
+  // 构建消息体
+  let bodyLines = [`类型：${eventConfig.name}`];
+  bodyLines.push(`产品：${productId}${offerInfo}`);
+
+  if (priceInfo && eventConfig.category !== "STATUS") {
+    bodyLines.push(`金额：${priceInfo}`);
+  }
+
+  if (offerPeriodInfo) {
+    bodyLines.push(offerPeriodInfo);
+  }
+
+  const body = bodyLines.join('\n');
+
+  // 7. 发送 Bark 通知
+  await sendBarkNotification(barkKey, title, body, {
+    icon: categoryConfig.icon || barkIcon,
+    sound: categoryConfig.sound,
+    group: categoryConfig.group
+  });
+
+  return { status: "success", message: `Notification sent: ${eventConfig.name}` };
 }
 
 // ==================== 辅助工具函数 ====================
@@ -147,28 +276,124 @@ function decodeJWS(token) {
   }
 }
 
-function getRevenueEventName(type, subtype) {
+/**
+ * 深度合并对象
+ */
+function deepMerge(target, source) {
+  const result = { ...target };
+  for (const key in source) {
+    if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+      result[key] = deepMerge(result[key] || {}, source[key]);
+    } else {
+      result[key] = source[key];
+    }
+  }
+  return result;
+}
+
+/**
+ * 获取通知配置（合并环境变量覆盖）
+ */
+function getNotificationConfig(env) {
+  if (env?.NOTIFICATION_CONFIG) {
+    try {
+      const envConfig = JSON.parse(env.NOTIFICATION_CONFIG);
+      return deepMerge(NOTIFICATION_CONFIG, envConfig);
+    } catch (e) {
+      console.error("NOTIFICATION_CONFIG parse error:", e);
+    }
+  }
+  return NOTIFICATION_CONFIG;
+}
+
+/**
+ * 解析 ISO 8601 duration 格式的优惠时长
+ * P1D=1天, P7D=7天, P1W=1周, P1M=1个月, P3M=3个月, P1Y=1年
+ */
+function parseOfferPeriod(period) {
+  if (!period) return null;
+  const match = period.match(/^P(\d+)([DWMY])$/);
+  if (!match) return period;
+  const [, num, unit] = match;
+  const units = { D: '天', W: '周', M: '个月', Y: '年' };
+  return `${num}${units[unit] || unit}`;
+}
+
+/**
+ * 格式化价格（毫单位转换）
+ */
+function formatPrice(price, currency) {
+  if (price === undefined || price === null || !currency) return null;
+  const amount = price / 1000;
+  try {
+    return new Intl.NumberFormat('zh-CN', {
+      style: 'currency',
+      currency: currency
+    }).format(amount);
+  } catch (e) {
+    return `${currency} ${amount.toFixed(2)}`;
+  }
+}
+
+/**
+ * 获取事件配置
+ * 返回: { name: 事件中文名, category: 类别(REVENUE/REFUND/RISK/STATUS), emoji: 图标 }
+ */
+function getEventConfig(type, subtype) {
   const key = `${type}|${subtype || ''}`;
   const keyTypeOnly = `${type}|`;
 
-  const revenueEvents = {
-    "SUBSCRIBED|INITIAL_BUY": "新订阅 (首次)",
-    "SUBSCRIBED|RESUBSCRIBE": "重新订阅",
-    "DID_RENEW|": "续订成功",
-    "DID_RENEW|BILLING_RECOVERY": "续订恢复",
-    "ONE_TIME_CHARGE|": "一次性购买",
-    "OFFER_REDEEMED|INITIAL_BUY": "优惠首购",
-    "OFFER_REDEEMED|RESUBSCRIBE": "优惠重订",
-    "OFFER_REDEEMED|UPGRADE": "优惠升级"
+  // 所有事件映射表
+  const eventMap = {
+    // ============ 正向收入事件 (REVENUE) ============
+    "SUBSCRIBED|INITIAL_BUY": { name: "新订阅 (首次)", category: "REVENUE", emoji: "🎉" },
+    "SUBSCRIBED|RESUBSCRIBE": { name: "重新订阅", category: "REVENUE", emoji: "🎉" },
+    "DID_RENEW|": { name: "续订成功", category: "REVENUE", emoji: "🎉" },
+    "DID_RENEW|BILLING_RECOVERY": { name: "续订恢复", category: "REVENUE", emoji: "🎉" },
+    "ONE_TIME_CHARGE|": { name: "一次性购买", category: "REVENUE", emoji: "🎉" },
+    "OFFER_REDEEMED|INITIAL_BUY": { name: "优惠首购", category: "REVENUE", emoji: "🎉" },
+    "OFFER_REDEEMED|RESUBSCRIBE": { name: "优惠重订", category: "REVENUE", emoji: "🎉" },
+    "OFFER_REDEEMED|UPGRADE": { name: "优惠升级", category: "REVENUE", emoji: "🎉" },
+    "OFFER_REDEEMED|DOWNGRADE": { name: "优惠降级", category: "REVENUE", emoji: "🎉" },
+    "REFUND_REVERSED|": { name: "退款撤销", category: "REVENUE", emoji: "🎉" },
+
+    // ============ 退款事件 (REFUND) ============
+    "REFUND|": { name: "退款", category: "REFUND", emoji: "💸" },
+    "REFUND|CONSUMPTION_REQUEST": { name: "消耗品退款请求", category: "REFUND", emoji: "💸" },
+    "CONSUMPTION_REQUEST|": { name: "消耗品信息请求", category: "REFUND", emoji: "💸" },
+
+    // ============ 风险预警事件 (RISK) ============
+    "DID_FAIL_TO_RENEW|": { name: "续订失败", category: "RISK", emoji: "⚠️" },
+    "DID_FAIL_TO_RENEW|GRACE_PERIOD": { name: "续订失败 (宽限期)", category: "RISK", emoji: "⚠️" },
+    "EXPIRED|VOLUNTARY": { name: "主动取消过期", category: "RISK", emoji: "⚠️" },
+    "EXPIRED|BILLING_RETRY": { name: "账单重试失败过期", category: "RISK", emoji: "⚠️" },
+    "EXPIRED|PRICE_INCREASE": { name: "拒绝涨价过期", category: "RISK", emoji: "⚠️" },
+    "EXPIRED|PRODUCT_NOT_FOR_SALE": { name: "产品下架过期", category: "RISK", emoji: "⚠️" },
+    "GRACE_PERIOD_EXPIRED|": { name: "宽限期结束", category: "RISK", emoji: "⚠️" },
+    "REVOKE|": { name: "订阅被撤销", category: "RISK", emoji: "⚠️" },
+
+    // ============ 状态变更事件 (STATUS) ============
+    "DID_CHANGE_RENEWAL_STATUS|AUTO_RENEW_DISABLED": { name: "关闭自动续订", category: "STATUS", emoji: "ℹ️" },
+    "DID_CHANGE_RENEWAL_STATUS|AUTO_RENEW_ENABLED": { name: "开启自动续订", category: "STATUS", emoji: "ℹ️" },
+    "DID_CHANGE_RENEWAL_PREF|UPGRADE": { name: "计划升级", category: "STATUS", emoji: "ℹ️" },
+    "DID_CHANGE_RENEWAL_PREF|DOWNGRADE": { name: "计划降级", category: "STATUS", emoji: "ℹ️" },
+    "PRICE_INCREASE|PENDING": { name: "涨价待确认", category: "STATUS", emoji: "ℹ️" },
+    "PRICE_INCREASE|ACCEPTED": { name: "涨价已同意", category: "STATUS", emoji: "ℹ️" },
+    "RENEWAL_EXTENDED|": { name: "订阅已延期", category: "STATUS", emoji: "ℹ️" },
+    "RENEWAL_EXTENSION|SUMMARY": { name: "批量延期完成", category: "STATUS", emoji: "ℹ️" },
+    "RENEWAL_EXTENSION|FAILURE": { name: "延期失败", category: "STATUS", emoji: "ℹ️" },
+    "EXTERNAL_PURCHASE_TOKEN|": { name: "外部购买令牌", category: "STATUS", emoji: "ℹ️" },
+    "TEST|": { name: "测试通知", category: "STATUS", emoji: "🧪" }
   };
 
-  if (revenueEvents[key]) return revenueEvents[key];
-  if (revenueEvents[keyTypeOnly]) return revenueEvents[keyTypeOnly];
-  return null; // 返回 null 代表不通知
+  if (eventMap[key]) return eventMap[key];
+  if (eventMap[keyTypeOnly]) return eventMap[keyTypeOnly];
+  return null;
 }
 
-async function sendBarkNotification(key, title, body, icon) {
+async function sendBarkNotification(key, title, body, options = {}) {
   if (!key) return;
+  const { icon = "", sound = "calypso", group = "Revenue" } = options;
   try {
     await fetch(`https://api.day.app/${key}`, {
       method: 'POST',
@@ -176,9 +401,9 @@ async function sendBarkNotification(key, title, body, icon) {
       body: JSON.stringify({
         title: title,
         body: body,
-        sound: "calypso",
-        icon: icon || "",
-        group: "Revenue"
+        sound: sound,
+        icon: icon,
+        group: group
       })
     });
   } catch (e) {
@@ -231,6 +456,9 @@ function renderHtml(currentUrl, env) {
   const forwardUrl = env?.FORWARD_URL || FORWARD_URL;
   const enableSandbox = env?.ENABLE_SANDBOX_NOTIFICATIONS === "true" ||
                         (env?.ENABLE_SANDBOX_NOTIFICATIONS === undefined && ENABLE_SANDBOX_NOTIFICATIONS);
+
+  // 读取通知类型配置
+  const notificationConfig = getNotificationConfig(env);
 
   const maskedBarkKey = maskBarkKey(barkKey);
   const maskedForwardUrl = maskUrl(forwardUrl);
@@ -310,7 +538,7 @@ function renderHtml(currentUrl, env) {
         <span class="config-value ${!barkKey ? 'warning' : ''}">${!barkKey ? '⚠️ 未配置' : maskedBarkKey}</span>
       </div>
       <div class="config-item">
-        <span class="config-label">Bark 图标</span>
+        <span class="config-label">默认图标</span>
         ${barkIcon ? `<img src="${barkIcon}" alt="Bark Icon" class="config-icon" onerror="this.style.display='none'; this.nextElementSibling.style.display='inline';" /><span class="config-value" style="display:none;">加载失败</span>` : '<span class="config-value">未设置</span>'}
       </div>
       <div class="config-item">
@@ -320,6 +548,26 @@ function renderHtml(currentUrl, env) {
       <div class="config-item">
         <span class="config-label">转发 URL</span>
         <span class="config-value">${forwardUrl ? maskedForwardUrl : '未设置'}</span>
+      </div>
+    </div>
+
+    <div class="config-box">
+      <h3>📬 通知类型开关</h3>
+      <div class="config-item">
+        <span class="config-label">🎉 收入通知</span>
+        <span class="config-value ${notificationConfig.REVENUE?.enabled ? 'enabled' : 'disabled'}">${notificationConfig.REVENUE?.enabled ? '已启用' : '已禁用'}</span>
+      </div>
+      <div class="config-item">
+        <span class="config-label">💸 退款通知</span>
+        <span class="config-value ${notificationConfig.REFUND?.enabled ? 'enabled' : 'disabled'}">${notificationConfig.REFUND?.enabled ? '已启用' : '已禁用'}</span>
+      </div>
+      <div class="config-item">
+        <span class="config-label">⚠️ 风险预警</span>
+        <span class="config-value ${notificationConfig.RISK?.enabled ? 'enabled' : 'disabled'}">${notificationConfig.RISK?.enabled ? '已启用' : '已禁用'}</span>
+      </div>
+      <div class="config-item">
+        <span class="config-label">ℹ️ 状态变更</span>
+        <span class="config-value ${notificationConfig.STATUS?.enabled ? 'enabled' : 'disabled'}">${notificationConfig.STATUS?.enabled ? '已启用' : '已禁用'}</span>
       </div>
     </div>
 
