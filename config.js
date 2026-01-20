@@ -14,6 +14,11 @@
  * - 全局配置：
  *   - BARK_KEY: 全局 Bark Key（所有应用共用）
  *   - NOTIFICATION_CONFIG: 全局通知类型配置 (JSON 字符串)
+ *   - BARK_SOUND: 默认提示音（作为保底）
+ *   - BARK_SOUND_REVENUE: 收入通知提示音
+ *   - BARK_SOUND_REFUND: 退款通知提示音
+ *   - BARK_SOUND_RISK: 风险预警提示音
+ *   - BARK_SOUND_STATUS: 状态变更提示音
  */
 
 import { deepMerge } from './src/utils.js';
@@ -138,6 +143,20 @@ export function getNotificationConfig(appNotifications, env) {
   // 再合并应用级配置
   if (appNotifications) {
     config = deepMerge(config, appNotifications);
+  }
+
+  // 最后处理 BARK_SOUND 环境变量（优先级最高）
+  // BARK_SOUND_xxx 覆盖特定类别，BARK_SOUND 作为默认保底
+  const defaultSound = env?.BARK_SOUND;
+  const categories = ['REVENUE', 'REFUND', 'RISK', 'STATUS'];
+
+  for (const category of categories) {
+    const categorySound = env?.[`BARK_SOUND_${category}`];
+    if (categorySound) {
+      config[category].sound = categorySound;
+    } else if (defaultSound) {
+      config[category].sound = defaultSound;
+    }
   }
 
   return config;
