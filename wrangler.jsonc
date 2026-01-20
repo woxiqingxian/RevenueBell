@@ -1,0 +1,12 @@
+{
+  "name": "revenuebell",
+  "main": "index.js",
+  "compatibility_date": "2024-01-01",
+  "vars": {
+    "APPS": "irich,ifocus",
+    "PRODUCT_NAME_irich": "iRich",
+    "PRODUCT_NAME_ifocus": "iFocus",
+    "BARK_ICON_irich": "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource211/v4/b2/9d/22/b29d22a0-f3fe-86ea-85b1-b67ea1653c76/Placeholder.mill/400x400bb-75.webp",
+    "BARK_ICON_ifocus": "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource211/v4/f1/0f/39/f10f398a-660d-0d03-1733-250f73089636/Placeholder.mill/360x360bb.png"
+  }
+}
