@@ -1,5 +1,5 @@
 {
   "name": "revenue-bell",
-  "main": "wpush.js",
+  "main": "src/index.js",
   "compatibility_date": "2024-01-01"
 }
