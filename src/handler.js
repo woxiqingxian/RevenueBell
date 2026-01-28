@@ -178,11 +178,12 @@ export async function handleAppleNotification(data, appName, appConfig, env) {
 
   const body = bodyLines.join('\n');
 
-  // 7. 发送 Bark 通知
+  // 7. 发送 Bark 通知（按 APP 分组）
+  const groupName = `${productName}-${categoryConfig.group}`;
   await sendBarkNotification(barkKey, title, body, {
     icon: categoryConfig.icon || barkIcon,
     sound: categoryConfig.sound,
-    group: categoryConfig.group
+    group: groupName
   });
 
   return { status: "success", message: `Notification sent: ${eventConfig.name}` };
