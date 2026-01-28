@@ -18,7 +18,7 @@ export default {
     const path = url.pathname;
 
     // 解析应用名称 (去掉开头的 /)
-    const appName = path.slice(1).toLowerCase();
+    const appName = path.slice(1);
 
     // ==================== 1. 根路径 - 应用列表 ====================
     if (path === "/" || path === "") {

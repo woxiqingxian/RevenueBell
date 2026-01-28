@@ -69,7 +69,7 @@ export const DEFAULT_NOTIFICATION_CONFIG = {
  */
 export function getAppList(env) {
   if (env?.APPS) {
-    return env.APPS.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    return env.APPS.split(',').map(s => s.trim()).filter(Boolean);
   }
   return [];
 }
@@ -83,17 +83,19 @@ export function getAppList(env) {
 export function getAppConfig(appName, env) {
   const appList = getAppList(env);
 
-  if (!appList.includes(appName.toLowerCase())) {
+  // 查找匹配的应用（忽略大小写比较，但返回原始名称）
+  const matchedApp = appList.find(app => app.toLowerCase() === appName.toLowerCase());
+  if (!matchedApp) {
     return null;
   }
 
-  // 从环境变量读取（支持小写和大写 appname）
+  // 使用原始大小写的应用名称读取配置
   const getEnvVar = (prefix) => {
-    return env?.[`${prefix}_${appName}`] || env?.[`${prefix}_${appName.toUpperCase()}`];
+    return env?.[`${prefix}_${matchedApp}`];
   };
 
   const result = {
-    productName: getEnvVar('PRODUCT_NAME') || appName,
+    productName: getEnvVar('PRODUCT_NAME') || matchedApp,
     // BARK_KEY: 先找 BARK_KEY_appname，再找全局 BARK_KEY
     barkKey: getEnvVar('BARK_KEY') || env?.BARK_KEY || DEFAULT_APP_CONFIG.barkKey,
     barkIcon: getEnvVar('BARK_ICON') || DEFAULT_APP_CONFIG.barkIcon,

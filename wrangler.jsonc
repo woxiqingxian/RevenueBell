@@ -5,9 +5,9 @@
   "vars": {
     "APPS": "iRich,iDeepa",
     "BARK_SOUND": "sherwoodforest",
-    "PRODUCT_NAME_irich": "iRich",
-    "PRODUCT_NAME_ifocus": "iDeepa",
-    "BARK_ICON_irich": "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource211/v4/b2/9d/22/b29d22a0-f3fe-86ea-85b1-b67ea1653c76/Placeholder.mill/400x400bb-75.webp",
-    "BARK_ICON_ideepa": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/77/6b/b6/776bb639-94e1-347d-3d07-3566cfc54018/AppIcon-0-0-1x_U007ephone-0-1-85-220.png/360x360ia.png"
+    "PRODUCT_NAME_iRich": "iRich",
+    "PRODUCT_NAME_iDeepa": "iDeepa",
+    "BARK_ICON_iRich": "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource211/v4/b2/9d/22/b29d22a0-f3fe-86ea-85b1-b67ea1653c76/Placeholder.mill/400x400bb-75.webp",
+    "BARK_ICON_iDeepa": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/77/6b/b6/776bb639-94e1-347d-3d07-3566cfc54018/AppIcon-0-0-1x_U007ephone-0-1-85-220.png/360x360ia.png"
   }
 }
