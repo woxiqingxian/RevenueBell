@@ -30,6 +30,13 @@ export default {
       return new Response("Method Not Allowed", { status: 405 });
     }
 
+    // ==================== Ping 健康检查 ====================
+    if (path === "/ping") {
+      return new Response("pong", {
+        headers: { "Content-Type": "text/plain" },
+      });
+    }
+
     // ==================== 2. 应用路径 /:appName ====================
     const appConfig = getAppConfig(appName, env);
 
